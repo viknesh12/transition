@@ -2,18 +2,13 @@ package transition
 
 import (
 	"fmt"
-	"strings"
-
 	"github.com/jinzhu/gorm"
-	"github.com/qor/admin"
-	"github.com/qor/qor/resource"
-	"github.com/qor/roles"
+	"strings"
 )
 
 // Transition is a struct, embed it in your struct to enable state machine for the struct
 type Transition struct {
 	State           string
-	StateChangeLogs []StateChangeLog `sql:"-"`
 }
 
 // SetState set state to Stater, just set, won't save it into database
@@ -47,6 +42,20 @@ type StateMachine struct {
 	events       map[string]*Event
 }
 
+func (sm *StateMachine) EventAllowed(val Stater, eventName string) bool{
+	event := sm.events[eventName]
+	for _, transition := range event.transitions {
+		if len(transition.froms) > 0 {
+			for _, fromState := range transition.froms {
+				if strings.Compare(fromState, val.GetState()) == 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // Initial define the initial state
 func (sm *StateMachine) Initial(name string) *StateMachine {
 	sm.initialState = name
@@ -70,13 +79,8 @@ func (sm *StateMachine) Event(name string) *Event {
 // Trigger trigger an event
 func (sm *StateMachine) Trigger(name string, value Stater, tx *gorm.DB, notes ...string) error {
 	var (
-		newTx    *gorm.DB
 		stateWas = value.GetState()
 	)
-
-	if tx != nil {
-		newTx = tx.New()
-	}
 
 	if stateWas == "" {
 		stateWas = sm.initialState
@@ -106,7 +110,7 @@ func (sm *StateMachine) Trigger(name string, value Stater, tx *gorm.DB, notes ..
 			// State: exit
 			if state, ok := sm.states[stateWas]; ok {
 				for _, exit := range state.exits {
-					if err := exit(value, newTx); err != nil {
+					if err := exit(value, tx); err != nil {
 						return err
 					}
 				}
@@ -114,7 +118,7 @@ func (sm *StateMachine) Trigger(name string, value Stater, tx *gorm.DB, notes ..
 
 			// Transition: before
 			for _, before := range transition.befores {
-				if err := before(value, newTx); err != nil {
+				if err := before(value, tx); err != nil {
 					return err
 				}
 			}
@@ -124,7 +128,7 @@ func (sm *StateMachine) Trigger(name string, value Stater, tx *gorm.DB, notes ..
 			// State: enter
 			if state, ok := sm.states[transition.to]; ok {
 				for _, enter := range state.enters {
-					if err := enter(value, newTx); err != nil {
+					if err := enter(value, tx); err != nil {
 						value.SetState(stateWas)
 						return err
 					}
@@ -133,25 +137,16 @@ func (sm *StateMachine) Trigger(name string, value Stater, tx *gorm.DB, notes ..
 
 			// Transition: after
 			for _, after := range transition.afters {
-				if err := after(value, newTx); err != nil {
+				if err := after(value, tx); err != nil {
 					value.SetState(stateWas)
 					return err
 				}
 			}
 
-			if newTx != nil {
-				scope := newTx.NewScope(value)
-				log := StateChangeLog{
-					ReferTable: scope.TableName(),
-					ReferID:    GenerateReferenceKey(value, tx),
-					From:       stateWas,
-					To:         transition.to,
-					Note:       strings.Join(notes, ""),
-				}
-				return newTx.Save(&log).Error
+			if tx != nil {
+				return tx.Save(value).Error
 			}
 
-			return nil
 		}
 	}
 	return fmt.Errorf("failed to perform event %s from state %s", name, stateWas)
@@ -213,29 +208,4 @@ func (transition *EventTransition) Before(fc func(value interface{}, tx *gorm.DB
 func (transition *EventTransition) After(fc func(value interface{}, tx *gorm.DB) error) *EventTransition {
 	transition.afters = append(transition.afters, fc)
 	return transition
-}
-
-// ConfigureQorResource used to configure transition for qor admin
-func (transition *Transition) ConfigureQorResource(res resource.Resourcer) {
-	if res, ok := res.(*admin.Resource); ok {
-		if meta := res.GetMeta("State"); meta.Permission == nil {
-			meta.Permission = roles.Deny(roles.Update, roles.Anyone).Deny(roles.Create, roles.Anyone)
-		}
-
-		res.OverrideIndexAttrs(func() {
-			res.IndexAttrs(res.IndexAttrs(), "-StateChangeLogs")
-		})
-
-		res.OverrideShowAttrs(func() {
-			res.ShowAttrs(res.ShowAttrs(), "-StateChangeLogs")
-		})
-
-		res.OverrideNewAttrs(func() {
-			res.NewAttrs(res.NewAttrs(), "-StateChangeLogs")
-		})
-
-		res.OverrideEditAttrs(func() {
-			res.EditAttrs(res.EditAttrs(), "-StateChangeLogs")
-		})
-	}
 }

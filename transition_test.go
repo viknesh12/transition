@@ -101,19 +101,6 @@ func TestGetLastStateChange(t *testing.T) {
 	if order.GetState() != "paid" {
 		t.Errorf("state doesn't changed to paid")
 	}
-
-	var lastStateChange = transition.GetLastStateChange(order, db)
-	if lastStateChange.To != "paid" {
-		t.Errorf("state to not set")
-	} else {
-		if lastStateChange.From != "checkout" {
-			t.Errorf("state from not set")
-		}
-
-		if lastStateChange.Note != "pay note" {
-			t.Errorf("state note not set")
-		}
-	}
 }
 
 func TestMultipleTransitionWithOneEvent(t *testing.T) {
